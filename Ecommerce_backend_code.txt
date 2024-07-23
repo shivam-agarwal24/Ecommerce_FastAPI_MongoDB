@@ -1,0 +1,1519 @@
+route/admin_route.py
+
+from fastapi import APIRouter, Depends, HTTPException
+from model import Admin
+import database
+
+admin_router = APIRouter(prefix="/admin", tags=["Admin"])
+
+
+@admin_router.post("/add")
+def add_admin(new_admin: Admin):
+    """
+    Adds a new admin user to the database.
+
+    **Request Body:**
+
+    - **Admin (model):** An object representing the new admin user with required fields
+      (likely including username, email, password etc. as defined in the `Admin` model).
+
+    **Response:**
+
+    - **201 Created:** If the admin user is successfully added, the response includes
+      the newly created admin object (excluding password for security reasons).
+    - **400 Bad Request:** If an admin with the same email already exists.
+    - **500 Internal Server Error:** If an unexpected error occurs.
+
+    **Raises:**
+
+    - `HTTPException`: If an unexpected error occurs during database operations.
+    """
+    try:
+        db = database.connect_to_mongo()
+        admin_col = database.get_admin_collection(db)
+        new_admin.generate_id()
+        new_admin.hash_password()
+        exist = admin_col.find_one({"email": new_admin.email}, {"_id": 0})
+        if exist:
+            return f"User with email id {new_admin.email} already exist"
+        else:
+            admin_col.insert_one(new_admin.dict())
+
+        added_user = admin_col.find_one({"email": new_admin.email}, {"_id": 0})
+        if added_user:
+            return f"User added with Username : {added_user["username"]} and User ID : {added_user["id"]}"
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@admin_router.get("/show/all")
+def show_all_admin(page_no: int = 1, page_size: int = 50):
+    """
+    Retrieves a paginated list of all admin users from the database.
+
+    **Query Parameters:**
+
+    - **page_no (int, optional):** The current page number (defaults to 1).
+    - **page_size (int, optional):** The number of admin users per page (defaults to 50).
+
+    **Response:**
+
+    - **200 OK:** A dictionary containing pagination information (`Page_No`, `Page_Size`,
+      `Total`), and a list of admin user objects (excluding password for security reasons).
+    - **404 Not Found:** If there are no admin users in the collection.
+    - **500 Internal Server Error:** If an unexpected error occurs.
+
+    **Raises:**
+
+    - `HTTPException`: If an unexpected error occurs during database operations.
+    """
+    try:
+        db = database.connect_to_mongo()
+        user_col = database.get_admin_collection(db)
+        skip_size = (page_no - 1) * page_size
+        total_admin = user_col.count_documents({})
+        result = (
+            user_col.find({}, {"_id": 0, "password": 0})
+            .skip(skip_size)
+            .limit(page_size)
+        )
+        result = list(result)
+
+        response = {
+            "Page_No": page_no,
+            "Page_Size": page_size,
+            "Total": total_admin,
+            "Admin Users": result,
+        }
+        if len(result) == 0:
+            return {"Message": "No More Admins Left in the Admin Collection"}
+        else:
+            return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@admin_router.get("/show/{email}")
+def show_admin(email: str):
+    """
+    Retrieves an admin user by their email address.
+
+    **Path Parameter:**
+
+    - **email (str):** The email address of the admin user to retrieve.
+
+    **Response:**
+
+    - **200 OK:** If an admin user with the specified email is found, the response includes
+      the admin user object (excluding password for security reasons).
+    - **404 Not Found:** If no admin user with the specified email is found.
+    - **500 Internal Server Error:** If an unexpected error occurs.
+
+    **Raises:**
+
+    - `HTTPException`: If an unexpected error occurs during database operations.
+    """
+    try:
+        db = database.connect_to_mongo()
+        admin_col = database.get_admin_collection(db)
+        exist = admin_col.find_one({"email": email}, {"_id": 0, "password": 0})
+        if not exist:
+            return f"User with user email {email} does not exist"
+        else:
+            return exist
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@admin_router.put("/update/address")
+def update_admin_address(
+    address: str, current_user=Depends(database.get_current_admin)
+):
+    """
+    Updates the address of an admin user.
+
+    **Path Parameter:**
+
+    - **email (str):** The email address of the admin user to update.
+
+    **Request Body:**
+
+    - **address (str):** The new address for the admin user.
+
+    **Authorization:**
+
+    - Requires authentication as a current admin user (obtained through the
+      `current_user` dependency).
+
+    **Response:**
+
+    - **200 OK:** If the admin user's address is successfully updated, the response includes
+      the updated admin user object (excluding password for security reasons).
+    - **401 Unauthorized:** If the user is not authorized to update admin addresses.
+    - **404 Not Found:** If no admin user with the specified email is found.
+    - **500 Internal Server Error:** If an unexpected error occurs.
+
+    **Raises:**
+
+    - `HTTPException`: If an unexpected error occurs during database operations.
+    """
+    try:
+        db = database.connect_to_mongo()
+        admin_col = database.get_admin_collection(db)
+        email = current_user["email"]
+        exist = admin_col.find_one({"email": email}, {"_id": 0})
+        if exist:
+            admin_col.update_one({"email": email}, {"$set": {"address": address}})
+            return admin_col.find_one({"email": email}, {"_id": 0})
+        else:
+            return f"Admin with email : {email} does not exist"
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@admin_router.delete("/delete")
+def delete(current_user=Depends(database.get_current_admin)):
+    """Deletes an admin user from the database.
+
+    This endpoint allows authorized admins to remove their own account.
+
+    Args:
+        current_user (dict): The currently authenticated admin user, obtained
+            through the `Depends(database.get_current_admin)` dependency.
+
+    Returns:
+        JSONResponse: A JSON response object with the following structure:
+            - message (str): A success or error message indicating the outcome
+              of the deletion operation.
+
+    Raises:
+        HTTPException: An HTTP exception with status code 500 (Internal Server Error)
+            if an unexpected error occurs during database interaction.
+    """
+    try:
+        db = database.connect_to_mongo()
+        admin_col = database.get_admin_collection(db)
+        email = current_user["email"]
+        exist = admin_col.find_one({"email": email}, {"_id": 0, "password": 0})
+        if not exist:
+            return f"User with user email {email} does not exist"
+        else:
+            admin_col.delete_one({"email": email})
+            return f"User with email : {email} is deleted from the record"
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@admin_router.delete("/deleteuser/{email}")
+def delete_user(email: str, current_user=Depends(database.get_current_admin)):
+    """Deletes a user from the database by email.
+
+    This endpoint allows authorized admins to delete a user account by providing the user's email address.
+
+    Args:
+        email (str): The email address of the user to be deleted.
+        current_user (dict): The currently authenticated admin user, obtained
+            through the `Depends(database.get_current_admin)` dependency.
+
+    Returns:
+        JSONResponse: A JSON response object with the following structure:
+            - message (str): A success or error message indicating the outcome
+              of the deletion operation.
+
+    Raises:
+        HTTPException: An HTTP exception with an appropriate status code:
+            - 404 (Not Found): If the user with the provided email address does not exist.
+            - 500 (Internal Server Error): If an unexpected error occurs during database interaction.
+    """
+    try:
+        db = database.connect_to_mongo()
+        user_col = database.get_user_collection(db)
+        exist = user_col.find_one({"email": email}, {"_id": 0, "password": 0})
+        if not exist:
+            return f"User with user email {email} does not exist"
+        else:
+            user_col.delete_one({"email": email})
+            return f"User with email : {email} is deleted from the record"
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+route/auth.py
+
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import OAuth2PasswordRequestForm
+import database
+from passlib.context import CryptContext
+
+auth_router = APIRouter(prefix="/auth", tags=["Authentication"])
+pwd_context = CryptContext(schemes=["argon2"])
+
+
+@auth_router.post("/token")
+def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    """
+    Performs user authentication for API access.
+
+    This endpoint accepts login credentials (username and password) via a POST request
+    and returns an access token on successful authentication. If the credentials are
+    incorrect or an error occurs, an HTTPException is raised with appropriate status
+    code and details.
+
+    **Raises:**
+
+    - HTTPException:
+        - 401 Unauthorized: If the username or password is incorrect.
+        - 500 Internal Server Error: If an unexpected error occurs during authentication.
+
+    **Returns:**
+
+    A dictionary containing:
+
+    - access_token: The generated JWT access token (if authentication is successful).
+    - type: The token type (always "Bearer" in this implementation).
+
+    """
+
+    try:
+        user = database.get_user(form_data.username)
+        admin = database.get_admin(form_data.username)
+
+        if user and pwd_context.verify(form_data.password, user["password"]):
+            access_token = database.create_access_token(
+                {"email": user["email"], "role": "user"}
+            )
+            return {"access_token": access_token, "type": "Bearer"}
+        elif admin and pwd_context.verify(form_data.password, admin["password"]):
+            access_token = database.create_access_token(
+                {"email": admin["email"], "role": "admin"}
+            )
+            return {"access_token": access_token, "type": "Bearer"}
+        else:
+            raise HTTPException(
+                status_code=401,
+                detail="Incorrect email or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+route/cart_route.py
+from fastapi import APIRouter, HTTPException, Depends
+from model import Cart
+import database
+
+
+cart_router = APIRouter(prefix="/cart", tags=["Cart"])
+
+
+@cart_router.get("/items")
+def get_items(current_user=Depends(database.get_current_user)):
+    """
+    Retrieve all items in the current user's cart.
+
+    This endpoint fetches all items in the cart of the currently logged-in user.
+
+    Args:
+        current_user (dict): The currently logged-in user. This is automatically injected by the
+                             Depends function which uses the get_current_user dependency.
+
+    Returns:
+        dict: A dictionary containing all items in the user's cart. If the cart is empty,
+              a message indicating that the cart is empty is returned.
+
+    Raises:
+        HTTPException: If an internal server error occurs, an HTTPException with status code 500 and
+                       the error details is raised.
+    """
+    try:
+        db = database.connect_to_mongo()
+        cart_col = database.get_cart_collection(db)
+        cart = cart_col.find_one({"user_id": current_user["id"]}, {"_id": 0})
+        if cart:
+            return cart
+        else:
+            return {"Message": "The Cart is Empty"}
+    except Exception as e:
+        return HTTPException(status_code=500, detail=str(e))
+
+
+@cart_router.put("/add")
+def add_item(
+    product_id: str, quantity: int = 1, current_user=Depends(database.get_current_user)
+):
+    """
+    Add an item to the current user's cart.
+
+    This endpoint allows the user to add a specified quantity of an item to their cart.
+
+    Args:
+        product_id (str): The ID of the product to be added to the cart.
+        quantity (int, optional): The quantity of the product to be added. Defaults to 1.
+        current_user (dict): The currently logged-in user. This is automatically injected by the
+                             Depends function which uses the get_current_user dependency.
+
+    Returns:
+        dict: A message indicating the item was added successfully.
+
+    Raises:
+        HTTPException: If an internal server error occurs, an HTTPException with status code 500 and
+                       the error details is raised.
+    """
+    try:
+        db = database.connect_to_mongo()
+        cart_col = database.get_cart_collection(db)
+        cart = cart_col.find_one({"user_id": current_user["id"]}, {"_id": 0})
+        if not cart:
+            cart = Cart(user_id=current_user["id"], items=[])
+        else:
+            cart = Cart(**cart)
+        cart.add_items(product_id=product_id, quantity=quantity)
+        cart_col.update_one(
+            {"user_id": current_user["id"]}, {"$set": cart.dict()}, upsert=True
+        )
+        return {"Message": "Item added to cart successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@cart_router.put("/remove")
+def remove_item(product_id: str, current_user=Depends(database.get_current_user)):
+    """
+    Remove an item from the current user's cart.
+
+    This endpoint allows the user to remove a specified item from their cart.
+
+    Args:
+        product_id (str): The ID of the product to be removed from the cart.
+        current_user (dict): The currently logged-in user. This is automatically injected by the
+                             Depends function which uses the get_current_user dependency.
+
+    Returns:
+        dict: A message indicating the item was removed successfully or that the item was not found in the cart.
+
+    Raises:
+        HTTPException: If the cart is not found, an HTTPException with status code 404 is raised.
+                       If an internal server error occurs, an HTTPException with status code 500 and
+                       the error details is raised.
+    """
+    try:
+        db = database.connect_to_mongo()
+        cart_col = database.get_cart_collection(db)
+        cart = cart_col.find_one({"user_id": current_user["id"]}, {"_id": 0})
+        if not cart:
+            raise HTTPException(status_code=404, detail="Cart not found")
+        else:
+            cart = Cart(**cart)
+        cart_products = [i.product_id for i in cart.items]
+        if product_id in cart_products:
+            cart.remove_item(product_id=product_id)
+            cart_col.update_one(
+                {"user_id": current_user["id"]}, {"$set": cart.dict()}, upsert=True
+            )
+            return {"Message": "Item remove from cart successfully"}
+        else:
+            return {"Message": "Item not found in Cart"}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@cart_router.delete("/delete")
+def delete_cart(current_user=Depends(database.get_current_user)):
+    """
+    Delete all items in the current user's cart.
+
+    This endpoint allows the user to delete all items from their cart.
+
+    Args:
+        current_user (dict): The currently logged-in user. This is automatically injected by the
+                             Depends function which uses the get_current_user dependency.
+
+    Returns:
+        dict: A message indicating all items in the cart have been deleted.
+
+    Raises:
+        HTTPException: If the cart is not found, an HTTPException with status code 404 is raised.
+                       If an internal server error occurs, an HTTPException with status code 500 and
+                       the error details is raised.
+    """
+    try:
+        db = database.connect_to_mongo()
+        cart_col = database.get_cart_collection(db)
+        cart = cart_col.find_one({"user_id": current_user["id"]}, {"_id": 0})
+
+        if not cart:
+            raise HTTPException(status_code=404, detail="Cart not Found")
+        else:
+            cart = cart_col.delete_one({"user_id": current_user["id"]})
+            return {"Message": "All the items in the cart are now deleted"}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
+route/order_route.py
+
+from fastapi import APIRouter, Depends, HTTPException
+import database
+from model import Order
+
+order_router = APIRouter(prefix="/order", tags=["Orders"])
+
+
+@order_router.post("/create")
+def create_order(current_user=Depends(database.get_current_user)):
+    """
+    Creates a new order for the currently authenticated user.
+
+    This endpoint allows a user to create a new order in the system.
+    It validates the user's authentication and assigns the user ID to the order
+    before saving it to the database.
+
+    Args:
+        new_order (Order): The order data to be created. This should be a validated Order object.
+        current_user (dict, optional): The current authenticated user. This is retrieved
+            through dependency injection. Defaults to Depends(database.get_current_user).
+
+    Returns:
+        dict: A dictionary containing a success message upon successful creation.
+
+    Raises:
+        HTTPException:
+            - 400: If the user ID is invalid.
+            - 500: If an internal server error occurs during order creation.
+    """
+    invalid_user = HTTPException(status_code=400, detail="Invalid User Id given")
+    try:
+        new_order = Order()
+        db = database.connect_to_mongo()
+        user_col = database.get_user_collection(db)
+        new_order.user_id = current_user["id"]
+        user_exit = user_col.find_one({"id": new_order.user_id}, {"_id": 0})
+        if user_exit:
+            new_order.generate_id()
+            new_order.add_products_from_cart(current_user["id"])
+            new_order.calculate_amount()
+            new_order.is_placed = True
+            order_col = database.get_order_collection(db)
+            order_col.insert_one(new_order.dict())
+            new_order.delete_cart(current_user["id"])
+            return {"Message": "Order Places Successfully"}
+        else:
+            raise invalid_user
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@order_router.get("/all")
+def get_all_orders(
+    current_user=Depends(database.get_current_admin),
+    page_no: int = 1,
+    page_size: int = 50,
+):
+    """
+    Retrieves a paginated list of all orders in the system.
+
+    This endpoint requires admin authentication and allows for retrieving orders
+    in a paginated manner. It retrieves the total number of orders and then fetches
+    a specific page based on the provided page number and size.
+
+    Args:
+        current_user (dict, optional): The current authenticated admin user. This is retrieved
+            through dependency injection. Defaults to Depends(database.get_current_admin).
+        page_no (int, optional): The page number to retrieve. Defaults to 1.
+        page_size (int, optional): The number of orders to retrieve per page. Defaults to 50.
+
+    Returns:
+        dict: A dictionary containing information about the retrieved orders, including:
+            - Page_No: The requested page number.
+            - Page_Size: The number of orders per page.
+            - Total: The total number of orders in the system.
+            - Orders: A list of order data for the requested page.
+
+    Raises:
+        HTTPException:
+            - 500: If an internal server error occurs during order retrieval.
+    """
+    try:
+        db = database.connect_to_mongo()
+        order_col = database.get_order_collection(db)
+        skip_size = (page_no - 1) * page_size
+        total_orders = order_col.count_documents({})
+        result = order_col.find({}, {"_id": 0}).skip(skip_size).limit(page_size)
+        result = list(result)
+
+        response = {
+            "Page_No": page_no,
+            "Page_Size": page_size,
+            "Total": total_orders,
+            "Orders": result,
+        }
+        if len(result) == 0:
+            return {"Message": "No More Orders Left in the Order Collection"}
+        else:
+            return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@order_router.get("/user")
+def get_user_orders(
+    current_user=Depends(database.get_current_user),
+    page_no: int = 1,
+    page_size: int = 50,
+):
+    """
+    Retrieves a paginated list of orders for the currently authenticated user.
+
+    This endpoint allows a user to retrieve their own orders in a paginated manner.
+    It retrieves the total number of user orders and then fetches a specific page
+    based on the provided page number and size.
+
+    Args:
+        current_user (dict, optional): The current authenticated user. This is retrieved
+            through dependency injection. Defaults to Depends(database.get_current_user).
+        page_no (int, optional): The page number to retrieve. Defaults to 1.
+        page_size (int, optional): The number of orders to retrieve per page. Defaults to 50.
+
+    Returns:
+        dict: A dictionary containing information about the retrieved orders, including:
+            - Page_No: The requested page number.
+            - Page_Size: The number of orders per page.
+            - Total: The total number of user orders.
+            - Orders: A list of order data for the requested page.
+
+    Raises:
+        HTTPException:
+            - 500: If an internal server error occurs during order retrieval.
+    """
+    try:
+        db = database.connect_to_mongo()
+        order_col = database.get_order_collection(db)
+        skip_size = (page_no - 1) * page_size
+        total_orders = order_col.count_documents({"user_id": current_user["id"]})
+        result = (
+            order_col.find({"user_id": current_user["id"]}, {"_id": 0})
+            .skip(skip_size)
+            .limit(page_size)
+        )
+        result = list(result)
+
+        response = {
+            "Page_No": page_no,
+            "Page_Size": page_size,
+            "Total": total_orders,
+            "Orders": result,
+        }
+        if len(result) == 0:
+            return {"Message": "No More Orders Left in the Order Collection"}
+        else:
+            return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@order_router.delete("/delete/{order_id}")
+def delete_order(order_id: str, current_user=Depends(database.get_current_admin)):
+    """
+    Delete an order by its ID.
+
+    This endpoint allows an admin to delete an order from the database.
+    It checks if the order exists and, if so, deletes it. If the order
+    does not exist, it returns a message indicating so.
+
+    Parameters:
+    - order_id (str): The ID of the order to be deleted.
+    - current_user: The current authenticated admin user (dependency injection).
+
+    Returns:
+    - str: A message indicating whether the order was successfully deleted or if it did not exist.
+
+    Raises:
+    - HTTPException: If there is an issue with the database connection or any other error occurs.
+    """
+    try:
+        db = database.connect_to_mongo()
+        order_col = database.get_order_collection(db)
+        exist = order_col.find_one({"id": order_id})
+        if exist:
+            order_col.delete_one({"id": order_id})
+            return f"Order with ID {order_id} is deleted from the record"
+        else:
+            return f"Order with ID {order_id} does not exist"
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+route/prouct_route.py
+
+from fastapi import APIRouter, Depends, HTTPException
+from model import Product
+import database
+from database import get_current_admin
+
+product_router = APIRouter(prefix="/product", tags=["Product"])
+
+
+@product_router.post("/add")
+def add_product(new_prod: Product, current_user=Depends(get_current_admin)):
+    """
+    This API endpoint allows authorized admins to add a new product to the database.
+
+    Args:
+        new_prod (Product): The product data to be added. (Expected data format as per the Product model)
+        current_user (User, optional): The currently logged-in admin user. Depends on get_current_admin dependency.
+
+    Returns:
+        dict: A dictionary containing a success message upon successful product addition.
+
+    Raises:
+        HTTPException: An HTTPException with status code 500 and details about the error if something goes wrong.
+    """
+    try:
+        new_prod.generate_id()
+        db = database.connect_to_mongo()
+        prod_col = database.get_product_collection(db)
+        prod_col.insert_one(new_prod.dict())
+        return {"Message": "Product added successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@product_router.get("/show/all")
+def show_all_product(page: int = 1, size: int = 50):
+    """
+    This API endpoint retrieves a paginated list of all products in the database.
+
+    Args:
+        page (int, optional): The current page number (defaults to 1).
+        size (int, optional): The number of products to retrieve per page (defaults to 50).
+
+    Returns:
+        dict: A dictionary containing information about the retrieved products, including:
+            * page (int): The current page number.
+            * size (int): The number of products retrieved per page.
+            * total (int): The total number of products in the database.
+            * products (list): A list of product data (as per the Product model) for the current page.
+            * message (str, optional): A message indicating no products were found if applicable.
+
+    Raises:
+        HTTPException: An HTTPException with status code 500 and details about the error if something goes wrong.
+    """
+    try:
+        db = database.connect_to_mongo()
+        prod_col = database.get_product_collection(db)
+
+        skip = (page - 1) * size
+
+        total_products = prod_col.count_documents({})
+
+        result = prod_col.find({}, {"_id": 0}).skip(skip).limit(size)
+        result = list(result)
+
+        response = {
+            "page": page,
+            "size": size,
+            "total": total_products,
+            "products": result,
+        }
+
+        if len(result) == 0:
+            return {"message": "No More Collections Left in the Products Collection"}
+        else:
+            return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@product_router.get("/show")
+def show_product(name: str, page: int = 1, size: int = 50):
+    """
+    This API endpoint retrieves a paginated list of all products in the database.
+
+    Args:
+        page (int, optional): The current page number (defaults to 1).
+        size (int, optional): The number of products to retrieve per page (defaults to 50).
+
+    Returns:
+        dict: A dictionary containing information about the retrieved products, including:
+            * page (int): The current page number.
+            * size (int): The number of products retrieved per page.
+            * total (int): The total number of products in the database.
+            * products (list): A list of product data (as per the Product model) for the current page.
+            * message (str, optional): A message indicating no products were found if applicable.
+
+    Raises:
+        HTTPException: An HTTPException with status code 500 and details about the error if something goes wrong.
+    """
+    try:
+        db = database.connect_to_mongo()
+        prod_col = database.get_product_collection(db)
+
+        skip = (page - 1) * size
+
+        total_products = prod_col.count_documents({})
+
+        result = prod_col.find({"name": name}, {"_id": 0}).skip(skip).limit(size)
+        result = list(result)
+
+        response = {
+            "page": page,
+            "size": size,
+            "total": total_products,
+            "products": result,
+        }
+
+        if len(result) == 0:
+            return {"message": "No More Collections Left in the Products Collection"}
+        else:
+            return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# @product_router.get("/show/{id}")
+# def show_product_id(id: str):
+#     """
+#     This API endpoint retrieves details of a specific product by its ID.
+
+#     Args:
+#         id (str): The unique ID of the product to retrieve.
+
+#     Returns:
+#         dict: A dictionary containing the product data (as per the Product model) if found,
+#                or a message indicating the product was not found.
+
+#     Raises:
+#         HTTPException: An HTTPException with status code 500 and details about the error if something goes wrong.
+#     """
+#     try:
+#         db = database.connect_to_mongo()
+#         prod_col = database.get_product_collection(db)
+#         print(id)
+#         result = prod_col.find_one({"id": id}, {"_id": 0})
+#         if result:
+#             return result
+#         else:
+#             return f"Product with id : {id} does not exist"
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
+
+
+@product_router.put("/update/price/{id}")
+def update_product_price(
+    id: str, price: int | float, current_user=Depends(get_current_admin)
+):
+    """
+    This API endpoint allows authorized admins to update the price of a product by its ID.
+
+    Args:
+        id (str): The unique ID of the product to update.
+        price (int | float): The new price for the product.
+        current_user (User, optional): The currently logged-in admin user. Depends on get_current_admin dependency.
+
+    Returns:
+        dict: A dictionary containing the updated product data (as per the Product model) if successful,
+               or a message indicating the product was not found.
+
+    Raises:
+        HTTPException: An HTTPException with status code 500 and details about the error if something goes wrong.
+    """
+    try:
+        db = database.connect_to_mongo()
+        prod_col = database.get_product_collection(db)
+        exist = prod_col.find_one({"id": id.upper()})
+        if exist:
+            prod_col.update_one({"id": id.upper()}, {"$set": {"price": price}})
+            return prod_col.find_one({"id": id.upper()}, {"_id": 0})
+        else:
+            return f"Product with id : {id.upper()} does not exist"
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@product_router.put("/update/quantity/{id}")
+def update_product_quantity(
+    id: str, quantity: int, current_user=Depends(get_current_admin)
+):
+    """
+    This API endpoint allows authorized admins to update the quantity of a product by its ID.
+
+    Args:
+        id (str): The unique ID of the product to update.
+        quantity (int): The new quantity for the product.
+        current_user (User, optional): The currently logged-in admin user. Depends on get_current_admin dependency.
+
+    Returns:
+        dict: A dictionary containing the updated product data (as per the Product model) if successful,
+               or a message indicating the product was not found.
+
+    Raises:
+        HTTPException: An HTTPException with status code 500 and details about the error if something goes wrong.
+    """
+    try:
+        db = database.connect_to_mongo()
+        prod_col = database.get_product_collection(db)
+        exist = prod_col.find_one({"id": id.upper()})
+        if exist:
+            prod_col.update_one({"id": id.upper()}, {"$set": {"quantity": quantity}})
+            return prod_col.find_one({"id": id.upper()}, {"_id": 0})
+        else:
+            return f"Product with id : {id.upper()} does not exist"
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@product_router.delete("/delete/{id}", dependencies=[Depends(get_current_admin)])
+def delete_product(id: str):
+    """
+    This API endpoint allows authorized admins to delete a product by its ID.
+
+    Args:
+        id (str): The unique ID of the product to delete.
+
+    Returns:
+        dict: A dictionary containing a success message upon successful product deletion,
+               or a message indicating the product was not found.
+
+    Raises:
+        HTTPException: An HTTPException with status code 500 and details about the error if something goes wrong.
+    """
+    try:
+        db = database.connect_to_mongo()
+        prod_col = database.get_product_collection(db)
+        exist = prod_col.find_one({"id": id.upper()})
+        if exist:
+            prod_col.delete_one({"id": id.upper()})
+            return f"Product with id : {id.upper()} is deleted from the record"
+        else:
+            return f"Product with id : {id.upper()} does not exist"
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+route/user_route.py
+
+
+from fastapi import APIRouter, Depends, HTTPException
+from model import User
+import database
+
+user_router = APIRouter(prefix="/user", tags=["User"])
+
+
+@user_router.post("/add")
+def add_user(new_user: User):
+    """
+    This API endpoint allows users to register a new account.
+
+    Args:
+        new_user (User): The user data to be added. (Expected data format as per the User model)
+
+    Returns:
+        dict: A dictionary containing a success message upon successful user registration,
+               including the newly generated username and ID, or a message indicating an existing user with the same email.
+
+    Raises:
+        HTTPException: An HTTPException with status code 500 and details about the error if something goes wrong.
+    """
+    try:
+        db = database.connect_to_mongo()
+        user_col = database.get_user_collection(db)
+        new_user.generate_id()
+        new_user.hash_password()
+        exist = user_col.find_one({"email": new_user.email}, {"_id": 0})
+        if exist:
+            return f"User with email id {new_user.email} already exist"
+        else:
+            user_col.insert_one(new_user.dict())
+
+        added_user = user_col.find_one({"email": new_user.email}, {"_id": 0})
+        if added_user:
+            return f"User added with Username : {added_user["username"]} and User ID : {added_user["id"]}"
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@user_router.get("/show/all")
+def show_all_user(page_no: int = 1, page_size: int = 50):
+    """
+    This API endpoint retrieves a paginated list of all users in the database, excluding password information.
+
+    Args:
+        page_no (int, optional): The current page number (defaults to 1).
+        page_size (int, optional): The number of users to retrieve per page (defaults to 50).
+
+    Returns:
+        dict: A dictionary containing information about the retrieved users, including:
+            * Page_No (int): The current page number.
+            * Page_Size (int): The number of users retrieved per page.
+            * Total (int): The total number of users in the database.
+            * Users (list): A list of user data (excluding password) as per the User model for the current page.
+            * message (str, optional): A message indicating no users were found if applicable.
+
+    Raises:
+        HTTPException: An HTTPException with status code 500 and details about the error if something goes wrong.
+    """
+    try:
+        db = database.connect_to_mongo()
+        user_col = database.get_user_collection(db)
+        skip_size = (page_no - 1) * page_size
+        total_user = user_col.count_documents({})
+        result = (
+            user_col.find({}, {"_id": 0, "password": 0})
+            .skip(skip_size)
+            .limit(page_size)
+        )
+        result = list(result)
+
+        response = {
+            "Page_No": page_no,
+            "Page_Size": page_size,
+            "Total": total_user,
+            "Users": result,
+        }
+        if len(result) == 0:
+            return {"Message": "No More Users Left in the User Collection"}
+        else:
+            return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@user_router.get("/show/{email}")
+def show_user(email: str):
+    """
+    This API endpoint retrieves details of a specific user by their email address, excluding password information.
+
+    Args:
+        email (str): The email address of the user to retrieve.
+
+    Returns:
+        dict: A dictionary containing the user data (excluding password) as per the User model if found,
+               or a message indicating the user was not found.
+
+    Raises:
+        HTTPException: An HTTPException with status code 500 and details about the error if something goes wrong.
+    """
+    try:
+        db = database.connect_to_mongo()
+        user_col = database.get_user_collection(db)
+        exist = user_col.find_one({"email": email}, {"_id": 0, "password": 0})
+        if not exist:
+            return f"User with user email {email} does not exist"
+        else:
+            return exist
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@user_router.put("/update/address/{email}")
+def update_user_address(
+    email: str, address: str, current_user=Depends(database.get_current_user)
+):
+    """
+    This API endpoint allows authorized users to update their address by providing their email address.
+
+    Args:
+        email (str): The email address of the user to update.
+        address (str): The new address for the user.
+        current_user (User, optional): The currently logged-in user (for authorization). Depends on get_current_user dependency.
+
+    Returns:
+        dict: A dictionary containing the updated user data (excluding password) as per the User model if successful,
+               or a message indicating the user was not found.
+
+    Raises:
+        HTTPException: An HTTPException with status code 500 and details about the error if something goes wrong.
+    """
+    try:
+        db = database.connect_to_mongo()
+        user_col = database.get_user_collection(db)
+        exist = user_col.find_one({"email": email})
+        if exist:
+            user_col.update_one({"email": email}, {"$set": {"address": address}})
+            return user_col.find_one({"email": email}, {"_id": 0})
+        else:
+            return f"Product with email : {email} does not exist"
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@user_router.delete("/delete/self")
+def delete_your_account(current_user=Depends(database.get_current_user)):
+    """
+    API endpoint to delete the currently logged-in user's account.
+
+    Args:
+        current_user (schemas.User): The currently logged-in user (for authorization). Depends on get_current_user dependency.
+
+    Returns:
+        dict: A dictionary containing a success message upon successful user deletion,
+               or a message indicating the user was not found.
+
+    Raises:
+        HTTPException: An HTTPException with status code 500 and details about the error if something goes wrong.
+    """
+    try:
+        db = database.connect_to_mongo()
+        user_col = database.get_user_collection(db)
+        email = current_user["email"]
+        exist = user_col.find_one({"email": email}, {"_id": 0, "password": 0})
+        if not exist:
+            return f"User with user email {email} does not exist"
+        else:
+            user_col.delete_one({"email": email})
+            return f"User with email : {email} is deleted from the record"
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+database.py
+
+
+from pymongo import MongoClient
+from os import getenv
+from fastapi import Depends, HTTPException
+from fastapi.security import OAuth2PasswordBearer
+from jose import jwt, JWTError
+from datetime import datetime, timedelta
+from model import TokenData
+from typing import Optional
+from passlib.context import CryptContext
+
+
+def connect_to_mongo():
+    """
+    Connects to MongoDB using the URL provided in environment variables.
+
+    Returns:
+        MongoClient: Connected MongoDB client instance.
+    """
+    client = MongoClient(getenv("Mongo_URL"))
+    return client.ECommerce
+
+
+def get_product_collection(db):
+    """Retrieves the 'Product' collection from the provided database."""
+    return db.Product
+
+
+def get_user_collection(db):
+    """Retrieves the 'User' collection from the provided database."""
+    return db.User
+
+
+def get_order_collection(db):
+    """Retrieves the 'Order' collection from the provided database."""
+    return db.Order
+
+
+def get_admin_collection(db):
+    """Retrieves the 'Admin' collection from the provided database."""
+    return db.Admin
+
+
+def get_cart_collection(db):
+    """Retrieves the 'Cart' collection from the provided database."""
+    return db.Cart
+
+
+outh2_scheme = OAuth2PasswordBearer("/auth/token")
+"""
+An instance of OAuth2PasswordBearer for authentication using JWT tokens.
+
+The tokenUrl argument specifies the endpoint for obtaining access tokens.
+"""
+
+
+SECRET_KEY: str = str(getenv("Secret_Key"))
+ALGO = "HS256"
+EXPIRATION_DURATION = 60
+
+
+def get_user(email: str):
+    """
+    Retrieves a user from the database by email address.
+
+    Args:
+        email (str): The email address of the user to retrieve.
+
+    Returns:
+        dict or None: A dictionary containing user data if found, otherwise None.
+    """
+    db = connect_to_mongo()
+    user_col = get_user_collection(db)
+    user = user_col.find_one({"email": email})
+    return user
+
+
+def get_admin(email: str):
+    """
+    Retrieves an administrator from the database by email address.
+
+    Args:
+        email (str): The email address of the administrator to retrieve.
+
+    Returns:
+        dict or None: A dictionary containing admin data if found, otherwise None.
+    """
+    db = connect_to_mongo()
+    admin_col = get_admin_collection(db)
+    admin = admin_col.find_one({"email": email})
+    return admin
+
+
+def create_access_token(data: dict, expiriration: Optional[timedelta] = None):
+    """
+    Creates an access token using JWT.
+
+    Args:
+        data (dict): The data to include in the token.
+        expiration (Optional[timedelta], optional): The expiration time for the token.
+            Defaults to EXPIRATION_DURATION if not provided.
+
+    Returns:
+        str: The encoded JWT access token.
+    """
+    to_encode = data.copy()
+    if expiriration:
+        expires = datetime.utcnow() + expiriration
+    else:
+        expires = datetime.utcnow() + timedelta(minutes=EXPIRATION_DURATION)
+
+    to_encode.update({"exp": expires})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGO)
+    return encoded_jwt
+
+
+def get_current_user(token: str = Depends(outh2_scheme)):
+    """
+    Retrieves the current user (user or admin) based on the provided access token.
+
+    This function performs the following steps:
+
+    1. **Dependency Injection:** Leverages the `Depends` dependency injection mechanism
+       from FastAPI to retrieve the access token from the request headers using the
+       configured `outh2_scheme` (usually set to "/auth/token").
+
+    2. **Error Handling:** Defines a custom `HTTPException` to handle various authentication
+       errors with a 401 (Unauthorized) status code and appropriate details.
+
+    3. **Token Decoding:** Attempts to decode the provided access token using the JWT library.
+       - If the token is invalid (e.g., expired, malformed, or incorrect signature), a
+         `JWTError` exception is raised.
+       - If decoding is successful, the payload (decoded data) is extracted as a dictionary.
+
+    4. **Payload Validation:** Checks for the presence of essential fields in the payload:
+       - `"email"`: The email address associated with the user or admin.
+       - `"role"`: The role of the user ("user" or "admin").
+       - If either field is missing, the `credentials_exception` is raised.
+
+    5. **User/Admin Retrieval:** Based on the extracted role:
+       - If the role is `"user"`, fetches the user data from the database using the `get_user`
+         function.
+       - If the role is `"admin"`, fetches the admin data from the database using the
+         `get_admin` function.
+       - If the user or admin cannot be found in the database, the `credentials_exception`
+         is raised.
+
+    6. **Return User/Admin Data:** If all validations and retrievals are successful, returns
+       the dictionary containing user or admin data, respectively.
+
+    Raises:
+        HTTPException: If the token is invalid, credentials are invalid
+                       (missing email or role in payload, or user/admin not found),
+                       or an unexpected error occurs.
+
+    Returns:
+        dict: A dictionary containing the user data (if user role) or admin data (if admin role)
+              if authentication is successful, otherwise raises an exception.
+    """
+    credentials_exception = HTTPException(
+        status_code=401,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload: dict = jwt.decode(token, SECRET_KEY, algorithms=[ALGO])
+        email: str = payload["email"]
+        role: str = payload["role"]
+        if email is None or role is None:
+            raise credentials_exception
+        else:
+            token_data = TokenData(email=email, role=role)
+    except JWTError:
+        raise credentials_exception
+    if token_data.role == "user":
+        user = get_user(token_data.email)
+        if user is None:
+            raise credentials_exception
+        return user
+    elif token_data.role == "admin":
+        admin = get_admin(token_data.email)
+        if admin is None:
+            raise credentials_exception
+        return admin
+    else:
+        raise credentials_exception
+
+
+def get_current_admin(current_user: dict = Depends(get_current_user)):
+    """
+    Ensures the current user is an administrator and returns their data.
+
+    This function depends on the `get_current_user` function to retrieve the
+    currently authenticated user (user or admin). It then performs the following:
+
+    1. **Admin Role Check:** Verifies if the `"is_admin"` key exists in the `current_user`
+       dictionary and its value is `True`. If not, it raises an `HTTPException` with a 403
+       (Forbidden) status code indicating unauthorized access.
+
+    2. **Return Admin Data:** If the user is an admin, simply returns the `current_user`
+       dictionary containing their data.
+
+    Raises:
+        HTTPException: If the user is not an administrator (forbidden access).
+
+    Returns:
+        dict: The dictionary containing admin data if the user is an admin,
+              otherwise raises an exception.
+    """
+    if not current_user.get("is_admin"):
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden! You are not authorized to access this API",
+        )
+    return current_user
+
+
+def authenticate_user(db, email: str, password: str):
+    """
+    Authenticates a user based on email and password.
+
+    Args:
+        db (MongoClient): MongoDB client instance.
+        email (str): Email address of the user.
+        password (str): Password of the user.
+
+    Returns:
+        dict or bool: User document from MongoDB if authentication succeeds,
+                      False if user not found or authentication fails.
+    """
+    user = get_user(email)
+    if not user:
+        return False
+    pswd_context = CryptContext(schemes=["argon2"])
+    if not pswd_context.verify(password, user["password"]):
+        return False
+    return user
+
+
+def authenticate_admin(db, email: str, password: str):
+    """
+    Authenticates an admin based on email and password.
+
+    Args:
+        db (MongoClient): MongoDB client instance.
+        email (str): Email address of the admin.
+        password (str): Password of the admin.
+
+    Returns:
+        dict or bool: Admin document from MongoDB if authentication succeeds,
+                      False if admin not found or authentication fails.
+    """
+    admin = get_admin(email)
+    if not admin:
+        return False
+    pswd_context = CryptContext(schemes=["argon2"])
+    if not pswd_context.verify(password, admin["password"]):
+        return False
+    return admin
+
+
+main.py
+
+from fastapi import FastAPI
+from route.product_route import product_router
+from route.user_route import user_router
+from route.admin_route import admin_router
+from route.auth import auth_router
+from route.order_route import order_router
+from route.cart_route import cart_router
+
+
+app = FastAPI()
+
+app.include_router(product_router)
+app.include_router(user_router)
+app.include_router(admin_router)
+app.include_router(auth_router)
+app.include_router(order_router)
+app.include_router(cart_router)
+
+
+
+model.py
+
+from pydantic import BaseModel
+from typing import Optional, List
+from passlib.context import CryptContext
+from fastapi import HTTPException
+from uuid import uuid4
+
+
+class Product(BaseModel):
+    id: Optional[str | None] = None
+    name: str
+    description: str
+    price: int | float
+    quantity: int
+
+    def generate_id(self):
+        self.id = str(uuid4())
+
+
+class User(BaseModel):
+    id: Optional[str | None] = None
+    username: str
+    email: str
+    address: str
+    password: str
+    is_admin: bool = False
+
+    def generate_id(self):
+        self.id = str(uuid4())
+
+    def hash_password(self):
+        pswd_context = CryptContext(schemes=["argon2"])
+        self.password = pswd_context.hash(self.password)
+
+    def verify_password(self, pswd):
+        pswd_context = CryptContext(schemes=["argon2"])
+        return pswd_context.verify(pswd, self.password)
+
+
+class Admin(BaseModel):
+    id: Optional[str | None] = None
+    username: str
+    email: str
+    address: str
+    password: str
+    is_admin: bool = True
+
+    def generate_id(self):
+        self.id = str(uuid4())
+
+    def hash_password(self):
+        pswd_context = CryptContext(schemes=["argon2"])
+        self.password = pswd_context.hash(self.password)
+
+    def verify_password(self, pswd):
+        pswd_context = CryptContext(schemes=["argon2"])
+        return pswd_context.verify(pswd, self.password)
+
+
+class TokenData(BaseModel):
+    email: str
+    role: str
+
+
+class Cartitems(BaseModel):
+    product_id: str
+    quantity: int
+
+
+class Cart(BaseModel):
+    user_id: str
+    items: List[Cartitems] = []
+
+    def add_items(self, product_id: str, quantity: int):
+        found = False
+        for item in self.items:
+            if item.product_id == product_id:
+                found = True
+                item.quantity += quantity
+        if not found:
+            self.items.append(Cartitems(product_id=product_id, quantity=quantity))
+
+    def remove_item(self, product_id: str):
+        self.items = [item for item in self.items if item.product_id != product_id]
+
+
+class Order(BaseModel):
+    id: Optional[str | None] = None
+    user_id: Optional[str] = None
+    product_ids: Optional[list] = None
+    all_product: Optional[list] = []
+    amount: Optional[int | float] = 0
+    is_placed: bool = False
+
+    def generate_id(self):
+        self.id = str(uuid4())
+
+    def add_products_from_cart(self, user_id: str):
+        try:
+            import database
+
+            db = database.connect_to_mongo()
+            cart_col = database.get_cart_collection(db)
+            cart = cart_col.find_one({"user_id": user_id}, {"_id": 0})
+            if cart:
+                self.product_ids = cart.get("items")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    def delete_cart(self, user_id: str):
+        try:
+            import database
+
+            db = database.connect_to_mongo()
+            cart_col = database.get_cart_collection(db)
+            cart = cart_col.find_one({"user_id": user_id}, {"_id": 0})
+            if cart:
+                cart_col.delete_one({"user_id": user_id})
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    def calculate_amount(self):
+        import database
+
+        invalid_product_id_excrption = HTTPException(
+            status_code=203, detail="Invalid Profuct ID Found"
+        )
+        db = database.connect_to_mongo()
+        user_col = database.get_product_collection(db)
+        try:
+            if self.product_ids:
+                for i in self.product_ids:
+                    product = user_col.find_one(
+                        {"id": i.get("product_id")}, {"_id": 0, "quantity": 0}
+                    )
+
+                    if not product:
+                        raise invalid_product_id_excrption
+                    else:
+                        self.amount += product.get("price") * i.get("quantity")
+                        if self.all_product:
+                            self.all_product.append(dict(product))
+                        else:
+                            self.all_product = [dict(product)]
+
+        except HTTPException:
+            return invalid_product_id_excrption
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
+
+
+you have to provide the complete frontend and connectivity implementation using jinja2, html, css etc. create new modules and directories as required. There should be a nav bar with sections such as user, admin, order, products, and login. each section should take you to the page containing corresponding routes which are available inside the route directory. for example, in user section we should be able to add user, show user details, login as user, show all user(with pagination), update user address and delete the logged in user, these all api are provide in the route/user_route.py module. Similar for other sections as well. Take use of proper authentication is user and admin separately. Logged in user should be able to create order, see his order, and delete order. To understand which routes are available to whom check the dependencied in the route. All create the proper css file to make the frontend well presentable 
+
+
+provide the complete implementation in such a way that i dont have to change anything in them
