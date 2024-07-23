@@ -2,4 +2,4 @@ myenv/
 .env
 _pycache_
 route/_pycache_
-Ecommercer_Backend_code.txt
+*.txt
