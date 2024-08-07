@@ -173,12 +173,12 @@ def update_product_price(
     try:
         db = database.connect_to_mongo()
         prod_col = database.get_product_collection(db)
-        exist = prod_col.find_one({"id": id.upper()})
+        exist = prod_col.find_one({"id": id})
         if exist:
-            prod_col.update_one({"id": id.upper()}, {"$set": {"price": price}})
-            return prod_col.find_one({"id": id.upper()}, {"_id": 0})
+            prod_col.update_one({"id": id}, {"$set": {"price": price}})
+            return prod_col.find_one({"id": id}, {"_id": 0})
         else:
-            return f"Product with id : {id.upper()} does not exist"
+            return f"Product with id : {id} does not exist"
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -205,12 +205,12 @@ def update_product_quantity(
     try:
         db = database.connect_to_mongo()
         prod_col = database.get_product_collection(db)
-        exist = prod_col.find_one({"id": id.upper()})
+        exist = prod_col.find_one({"id": id})
         if exist:
-            prod_col.update_one({"id": id.upper()}, {"$set": {"quantity": quantity}})
-            return prod_col.find_one({"id": id.upper()}, {"_id": 0})
+            prod_col.update_one({"id": id}, {"$set": {"quantity": quantity}})
+            return prod_col.find_one({"id": id}, {"_id": 0})
         else:
-            return f"Product with id : {id.upper()} does not exist"
+            return f"Product with id : {id} does not exist"
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -233,11 +233,11 @@ def delete_product(id: str):
     try:
         db = database.connect_to_mongo()
         prod_col = database.get_product_collection(db)
-        exist = prod_col.find_one({"id": id.upper()})
+        exist = prod_col.find_one({"id": id})
         if exist:
-            prod_col.delete_one({"id": id.upper()})
-            return f"Product with id : {id.upper()} is deleted from the record"
+            prod_col.delete_one({"id": id})
+            return f"Product with id : {id} is deleted from the record"
         else:
-            return f"Product with id : {id.upper()} does not exist"
+            return f"Product with id : {id} does not exist"
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -27,13 +27,15 @@ def add_user(new_user: User):
         new_user.hash_password()
         exist = user_col.find_one({"email": new_user.email}, {"_id": 0})
         if exist:
-            return f"User with email id {new_user.email} already exist"
+            return {"message": f"User with email id {new_user.email} already exist"}
         else:
             user_col.insert_one(new_user.dict())
 
         added_user = user_col.find_one({"email": new_user.email}, {"_id": 0})
         if added_user:
-            return f"User added with Username : {added_user["username"]} and User ID : {added_user["id"]}"
+            return {
+                "message": f"User added with Username : {added_user["username"]} and User ID : {added_user["id"]}"
+            }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
